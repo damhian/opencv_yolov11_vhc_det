@@ -1,12 +1,17 @@
 import cv2
+import time
 from ultralytics import YOLO
 from speed import SpeedEstimator
 import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox
 from ultralytics.engine.results import Boxes
 
+# cv2.dnn.DNN_BACKEND_CUDA
+
 # Load YOLOv11 model
-model = YOLO("yolo11s.pt")
+# model = YOLO("yolo11n.pt")
+# model = YOLO("yolo11s.pt")
+model = YOLO("yolo11m.pt")
 
 # Initialize global variable to store cursor coordinates
 line_pts = [(0, 288), (1019, 288)]  # Static line definition
@@ -23,6 +28,11 @@ speed_obj = SpeedEstimator(reg_pts=line_pts, names=names)
 # Predefined RTSP streams
 RTSP_STREAMS = {
     "Camera 1": "rtsp://admin:admin@192.168.2.71:554/unicaststream/1",
+    "Camera 2 (MRKCCTVMERAK1)": "https://mitradarat-vidstream.kemenhub.go.id/stream/MRKCCTVMERAK1/stream.m3u8",
+    "Camera 3 (MRKCCTVMERAK2)": "https://mitradarat-vidstream.kemenhub.go.id/stream/MRKCCTVMERAK2/stream.m3u8",
+    "Camera 4 (Ambon)": "https://pantau.margamandala.co.id:3443/km97/ambon/ambon.m3u8",
+    "Camera 5 (Merak Entrance)": "https://pantau.margamandala.co.id:3443/merak/entrance/entrance.m3u8",
+    "Camera 6 (SP. Gadog)": "https://atcs-bptj.dephub.go.id/camera/gadog.m3u8",
     "(..Coming Soon..)": "(..Coming Soon..)",  # Example
 }
 
@@ -63,12 +73,16 @@ elif choice == "2":
     # Create a new window for RTSP stream selection
     rtsp_window = tk.Toplevel(root)
     rtsp_window.title("Select RTSP Stream")
-    rtsp_window.geometry("300x200")
+    rtsp_window.geometry("300x400")
 
     # Function to handle RTSP selection
     def select_rtsp(stream_url):
-        global cap
-        cap = cv2.VideoCapture(stream_url)
+        global selected_rtsp, cap
+        selected_rtsp = stream_url
+        cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
         rtsp_window.destroy()
 
     tk.Label(rtsp_window, text="Select a Camera Stream:", font=("Arial", 14)).pack(pady=10)
@@ -79,11 +93,11 @@ elif choice == "2":
     # Wait for user to select a stream
     root.wait_window(rtsp_window)
     
-    # Check if the stream URL was selected
+    # # Check if the stream URL was selected
     if not cap or not cap.isOpened():
         messagebox.showerror("Error", "Failed to open RTSP stream. Exiting...")
         exit()
-    
+                
 else:
     print("Invalid choice. Exiting...")
     exit()
@@ -117,7 +131,7 @@ count = 0
 def is_crossing_line(obj_center, line_start, line_end, is_horizontal):
     """Check if the object's center crosses the line."""
     x1, y1 = line_start
-    x2, y2 = line_end
+    # x2, y2 = line_end
     cx, cy = obj_center
 
     # # Line equation check
@@ -133,6 +147,19 @@ def is_crossing_line(obj_center, line_start, line_end, is_horizontal):
         return x1 - 5 <= cx <= x1 + 5
 
 while True:
+    # Function to attempt reconnection to the RTSP stream
+    def reconnect_stream():
+        global cap
+        print("Reconnecting to stream...")
+        cap.release()  # Release current capture object
+        time.sleep(2)  # Wait before reconnecting
+        cap = cv2.VideoCapture(selected_rtsp)  # Reconnect
+        if cap.isOpened():
+            print("Reconnected to stream successfully.")
+        else:
+            print("Failed to reconnect to stream.")
+        return cap
+    
     ret, frame = cap.read()
 
     if not ret:
@@ -140,8 +167,8 @@ while True:
         break
 
     count += 1
-    # if count % 2 != 0:  # Skip some frames for speed (optional)
-    #     continue
+    if count % 2 != 0:  # Skip some frames for speed (optional)
+        continue
 
     frame = cv2.resize(frame, (1020, 500))
     
@@ -210,5 +237,6 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
+# stop_vlc()
 cap.release()
 cv2.destroyAllWindows()
