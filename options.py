@@ -29,6 +29,6 @@ def choose_mode():
         messagebox.showerror("Error", "Invalid mode selected. Exiting...")
         exit()
     # mode = "Dwelling Time" if mode == "1" else "Speed and Track"
-    return "Dwelling Time" if mode == "1" else "Speed and Track"
+    return "dwelling_time" if mode == "1" else "speed_and_track"
     
     

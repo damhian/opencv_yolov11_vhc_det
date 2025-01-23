@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Select Camera</title>
+</head>
+
+<body>
+  <h1>Select a CCTV Camera</h1>
+  <ul>
+    {% for stream in cctv_streams %}
+    <li>
+      <a href="{{ url_for('video_feed', camera_name=stream.name) }}">
+        {{ stream.name }}
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</body>
+
+</html>

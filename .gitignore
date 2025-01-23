@@ -5,3 +5,4 @@ dist/
 compose.yaml
 Dockerfile
 README.Docker.md
+venv
