@@ -32,23 +32,6 @@ socketio.init_app(app)
 
 # print(cv2.getBuildInformation())
 
-# Global variables
-cap = None
-current_stream = None
-object_timers = {}
-emit_queue = Queue(maxsize=50)
-crossed_ids = set()
-objects_in_roi_count = 0
-frame_lock = threading.Lock()
-latest_frame = None
-latest_frames = {}
-line_pts = [(0, 288), (1019, 288)]  # Static line definition for speed mode
-speed_obj = SpeedEstimator(reg_pts=line_pts, names=names)
-vehicle_counts = {"car": 0, "truck": 0, "bus": 0, "motorcycle": 0}
-current_roi = None  # ROI for dwelling time mode
-input_source = None  # "File" or "RTSP/Stream"
-DEFAULT_MODE = 'speed_and_track'
-
 # Predefined RTSP streams
 RTSP_STREAMS = {
     # "Camera_1": "rtsp://admin:admin@192.168.2.71:554/unicaststream/1",
@@ -75,6 +58,24 @@ RTSP_STREAMS = {
         "url": "https://atcs-bptj.dephub.go.id/camera/gadog.m3u8"
     },
 }
+
+# Global variables
+cap = None
+current_stream = None
+object_timers = {}
+emit_queue = Queue(maxsize=50)
+processed_frames_queues = {stream_name: Queue(maxsize=10) for stream_name in RTSP_STREAMS}
+crossed_ids = set()
+objects_in_roi_count = 0
+frame_lock = threading.Lock()
+latest_frame = None
+latest_frames = {}
+line_pts = [(0, 288), (1019, 288)]  # Static line definition for speed mode
+speed_obj = SpeedEstimator(reg_pts=line_pts, names=names)
+vehicle_counts = {"car": 0, "truck": 0, "bus": 0, "motorcycle": 0}
+current_roi = None  # ROI for dwelling time mode
+input_source = None  # "File" or "RTSP/Stream"
+DEFAULT_MODE = 'speed_and_track'
 
 def get_ip_address():
     print("Getting IP address...")
@@ -149,11 +150,13 @@ def select_rtsp():
 
 def process_dwelling_time_mode(frame, results):
     # Process for dwelling time mode
-    global objects_in_roi_count, object_timers
+    global objects_in_roi_count, object_timers, crossed_ids
     
     if current_roi is None:
         print("Current ROI is not set.")
         return
+    
+    current_ids_in_roi = set()
     
     for result in results:
         if result.boxes:
@@ -165,13 +168,12 @@ def process_dwelling_time_mode(frame, results):
                 obj_id = int(box.id) if box.id is not None else -1
 
                 if is_inside_roi(obj_center, current_roi):
+                    current_ids_in_roi.add(obj_id)
                     if obj_id not in object_timers:
                         object_timers[obj_id] = time.time()
                     if obj_id not in crossed_ids:
                         crossed_ids.add(obj_id)
                         objects_in_roi_count += 1
-                    else:
-                        objects_in_roi_count -= 1
 
                     dwelling_time = time.time() - object_timers[obj_id]
                     dwelling_time_str = seconds_to_hms(dwelling_time)
@@ -190,7 +192,16 @@ def process_dwelling_time_mode(frame, results):
                     if obj_id in object_timers:
                         del object_timers[obj_id]
 
-    # Draw ROI and update object count
+    # Update the count of objects in ROI
+    for obj_id in list(crossed_ids):
+        if obj_id not in current_ids_in_roi:
+            crossed_ids.remove(obj_id)
+            objects_in_roi_count -= 1
+
+    # Ensure the count does not go below zero
+    objects_in_roi_count = max(objects_in_roi_count, 0)
+
+    # Draw ROI
     cv2.polylines(frame, [np.array(current_roi, dtype=np.int32)], isClosed=True, color=(0, 0, 255), thickness=2)
     cv2.putText(
         frame,
@@ -224,9 +235,6 @@ def process_speed_and_track_mode(frame, results):
                             vehicle_counts[obj_name] += 1
                         else:
                             vehicle_counts[obj_name] = 1
-                
-                cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (0, 255, 0), 2)
-                cv2.putText(frame, obj_name, (int(bbox[0]), int(bbox[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
     # Draw the lane line and vehicle count text
     cv2.line(frame, line_pts[0], line_pts[1], (0, 255, 0), 2)
@@ -237,19 +245,28 @@ def process_speed_and_track_mode(frame, results):
         y_offset += 20
 
     # Estimate speed if applicable
-    frame = speed_obj.estimate_speed(frame, results)
+    try:
+        frame = speed_obj.estimate_speed(frame, results)
+    except Exception as e:
+        print(f"Error in estimate_speed: {e}")
+
+    return frame
 
 # Function to process video frames
 def process_video(stream_name, stream_info, mode, cap):
 # def process_video():
     # global cap, latest_frame, objects_in_roi_count, vehicle_counts
     
-    global latest_frame, latest_frames, objects_in_roi_count, vehicle_counts, object_timers, crossed_ids, frame_lock, current_roi
+    global latest_frame, latest_frames, objects_in_roi_count, vehicle_counts, object_timers, crossed_ids, current_roi
 
     if isinstance(stream_info, dict) and "roi" in stream_info:
         current_roi = stream_info["roi"]
+        
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_time = 1.0 / fps if fps > 0 else 1.0 / 30  # Minimum frame time of 30ms
     
     while True:
+        start_time = time.time()
         ret, frame = cap.read()
         if not ret:
             print(f"Failed to read frame {stream_name}. Reconnecting...")
@@ -264,10 +281,10 @@ def process_video(stream_name, stream_info, mode, cap):
         elif mode == "speed_and_track":
             process_speed_and_track_mode(frame, results)
 
-        with frame_lock:
-            latest_frame = frame.copy()
-            latest_frames[stream_name] = frame.copy()  # Store the frame in latest_frames
-            print(f"Updated latest frame for {stream_name}")  # Debugging log
+        # wit:
+        latest_frame = frame.copy()
+        latest_frames[stream_name] = frame.copy()  # Store the frame in latest_frames
+        print(f"Updated latest frame for {stream_name}")  # Debugging log
             
         # Emit the frame via WebSocket
         if mode == "dwelling_time":
@@ -276,6 +293,15 @@ def process_video(stream_name, stream_info, mode, cap):
         elif mode == "speed_and_track":
             print("Emitting vehicle count update...")
             emit_queue.put(("vehicle_count_update", {"vehicle_counts": vehicle_counts}))
+            
+         # Add the processed frame to the queue
+        if not processed_frames_queues[stream_name].full():
+            processed_frames_queues[stream_name].put(frame.copy())
+        
+        # Ensure consistent frame rate
+        elapsed_time = time.time() - start_time
+        sleep_time = max(0, frame_time - elapsed_time)
+        time.sleep(sleep_time)
 
 def stream_all_rtsp():
     """
@@ -360,7 +386,7 @@ def handle_disconnect():
 #     def generate():
 #         global latest_frame
 #         while True:
-#             with frame_lock:
+#             wit:
 #                 if latest_frame is None:
 #                     continue
 #                 _, buffer = cv2.imencode(".jpg", latest_frame)
@@ -374,16 +400,16 @@ def video_feed(camera_name):
         return "Camera stream not found!", 404
 
     def generate():
-        global latest_frames
+        # global latest_frames
         while True:
-            with frame_lock:
-                if camera_name not in latest_frames or latest_frames[camera_name] is None:
-                    print(f"No frame available for {camera_name}")  # Debugging log
-                    continue
-                _, buffer = cv2.imencode(".jpg", latest_frames[camera_name])
-            yield (b"--frame\r\n"
+            # with frame_lock:
+                if not processed_frames_queues[camera_name].empty():
+                    frame = processed_frames_queues[camera_name].get()
+                    _, buffer = cv2.imencode(".jpg", frame)
+                    yield (b"--frame\r\n"
                    b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n")
-
+                else:
+                    time.sleep(0.01)
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 @app.route("/select_camera")
